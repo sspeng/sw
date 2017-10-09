@@ -88,7 +88,7 @@ void init_tmpdata() {
 void refresh_order() {
 	int id = athread_get_id(-1), idx, l;
 	Float minD = FLT_MAX;
-	lock--;		/**加锁*/
+	lock--;		/**加锁，这种加锁方式有无失败可能？*/
 	while (lock < 0);	/** 等候锁释放*/
 	for (l = id; l < NUM_LABELS; l += NUM_SLAVE_CORE) {
 		int ptr = 0;
@@ -115,10 +115,11 @@ void refresh_order() {
 /** 空间聚类
 *  @param
 *  1.data数组
-*  2.data有效长度host_nRays
+*  2.data有效长度
 *
 *  @proc
-*  直接修改data中的label标记
+*
+*  @return
 *
 */
 void vertex_cluster() {
@@ -138,7 +139,7 @@ void vertex_cluster() {
 				minptr = c;	/** 使用minptr减小访主次数*/
 			}
 		}
-		data[idx].label = minptr;/** 直接修改data中的类别标记*/
+		data[idx].label = minptr;
 		ptr[minptr]++;
 	}
 }
@@ -148,8 +149,8 @@ void vertex_cluster() {
 *******************朝向聚类部分******************
 *************************************************/
 
-/**此函数负责对已经进行位置聚类且按照相应顺序排列的
-* 光线数据进行朝向聚类
+/**此函数负责对已经进行位置聚类，且按照相应顺序排列
+* 的光线数据进行朝向聚类
 *
 * @param
 * 1.所有光线数据data
@@ -176,7 +177,7 @@ void vector_cluster() {
 				minptr = b;
 			}
 		}
-		data[idx].bunch = minptr;/** 修改光线中的类别标记*/
+		data[idx].bunch = minptr;
 		ptr[minptr]++;
 	}
 }
