@@ -17,6 +17,7 @@ extern "C" {
 	//void slave_vector_cluster_by_vertex(void);
 	void slave_vector_cluster(void);
 	void slave_sort_data_by_cluster(void);
+	void slave_sort_data_by_vertex(void);
 
 	void slave_func(void);
 }
@@ -83,9 +84,11 @@ void distribute() {
 	lock = 1;
 	athread_init();
 	//* 初始化gravity
+	//init_gravity();
 	while (host_nRays > 0) {
 		for (int i = 0; i < MAX_VERTEX_CLUSTER_ROUND; i++) {
 			/** 位置聚类*/
+			/** PART I Vertex Cluster*/
 			__real_athread_spawn((void*)slave_vertex_cluster, 0); /** 进行位置聚类*/
 			athread_join();
 
@@ -101,19 +104,25 @@ void distribute() {
 			sort_gravity_by_order(0, NUM_LABELS);/** 将gravity排序*/
 
 			int vertexptr[NUM_LABELS];/** 将data分成NUM_LABELS段*/
-			for (int p = 0; p < NUM_LABELS; p++) vertexptr[p] = p*NUM_RAYS / NUM_LABELS;
+			for (int p = 0; p < NUM_LABELS; p++) vertexptr[p] = p*(NUM_RAYS / NUM_LABELS);
 
-			__real_athread_spawn((void*)slave_init_tmpdata, 0); // tmpdata所有值初始置为0，由主核完成？
+			__real_athread_spawn((void*)slave_init_tmpdata, 0); /** tmpdata所有值初始置为0*/
 			athread_join();
 
-			//__real_athread_spawn((void*)slave_vector_cluster_by_vertex, 0);
+			/** 初始化vptr*/
+			for (int v = 0; v < NUM_LABELS; v++) vptr[v] = v*NUM_LABELS;
+
+			/** 对data重排序使成为形如123123123的锯齿形*/
+			__real_athread_spawn((void*)slave_sort_data_by_vertex, 0);
+			athread_join();
+
 			memcpy(data, tmpdata, sizeof(Point3)*NUM_RAYS);
 
+			/** PART II Vector Cluster*/
 			__real_athread_spawn((void*)slave_vector_cluster, 0);
 			athread_join();
 
-			///** 朝向聚类*/
-			__real_athread_spawn((void*)slave_init_tmpdata, 0); // tmpdata所有值初始置为0，由主核完成？
+			__real_athread_spawn((void*)slave_init_tmpdata, 0); /** tmpdata所有值初始置为0*/
 			athread_join();
 
 			for (int p = 0; p < NUM_CLUSTERS; p++) cptr[p] = p*NUM_CLUSTERS;
@@ -122,6 +131,7 @@ void distribute() {
 
 			memcpy(data, tmpdata, sizeof(Point3)*NUM_RAYS);
 		}
+		/** PART III Ray Render*/
 		host_nRays--;
 	}
 	athread_halt();/** 结束线程库*/
@@ -138,6 +148,7 @@ void init_data() {
 }
 
 
+/** for test*/
 void mfunc() {
 	athread_init();
 	while (host_nRays > 0) {
