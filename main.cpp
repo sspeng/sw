@@ -1,186 +1,86 @@
 #include <iostream>
-#include <assert.h>
+#include <stdlib.h>
+#include "defi.h"
 #include <string.h>
-#include <stdio.h>
-#include "definition.h"
+#include <assert.h>
 
-RayItem data[NUM_RAYS], tmpdata[NUM_RAYS], invRayItem;
-int curOrder[NUM_LABELS], preOrder[NUM_LABELS];
-volatile unsigned int host_nRays;
-volatile bool canSkip;
-int lptr[NUM_LABELS], bptr[NUM_BUNCHES];
+using namespace std;
 
-Point3 gravity[NUM_LABELS], direction[NUM_BUNCHES];
+RayItem data[NUM_RAYS],_data[NUM_RAYS];
+Point3 gravity[NUM_LABELS];
+SLAVE_CNT part[NUM_SLAVE_CORE][NUM_LABELS];
 
 
-extern "C" {
+extern "C"{
 #include <athread.h>
-
-	void slave_mark_vertex(void);
-	void slave_render(void);
+        void slave_func(void);
 }
 
-void init_data() {
-	memset(&invRayItem, 0, sizeof(RayItem));
-	for (int i = 0; i < NUM_RAYS; i++) {
-		data[i].ray.o.x = data[i].ray.d.x = i % 500;
-		data[i].ray.o.y = data[i].ray.d.y = i % 1000;
-		data[i].ray.o.z = data[i].ray.d.z = i % 300;
-		data[i].label = NUM_BUNCHES - i%NUM_LABELS - 1;
-		data[i].bunch = (rand()) % NUM_BUNCHES;
-		data[i].eta = i;
-	}
-	//for(int i=0;i<NUM_RAYS;i++) printf("[%d,%d]\n",data[i].label,data[i].bunch);
+void init_data(){
+        // init label & bunch
+        for(int i=0;i<NUM_RAYS;i++){
+                data[i].label=rand()%NUM_LABELS;
+                data[i].bunch=rand()%NUM_BUNCHES;
+                data[i].ray.o.x=(Float)(rand()%1000);
+                data[i].ray.o.y=(Float)(rand()%1000);
+                data[i].ray.o.z=(Float)(rand()%1000);
+        }
 }
 
-void distribute() {
-	/** Init*/
-	athread_init();
-	for (int i = 0; i < NUM_LABELS; i++) gravity[i] = data[i*(NUM_RAYS / NUM_LABELS)].ray.o;
+void sortVertex(RayItem data[NUM_RAYS],int validLen,int iterVertex = 10){
+        // 1,init gravity
+        for(int i=0;i<NUM_LABELS;i++){
+                gravity[i].x=data[NUM_RAYS/NUM_LABELS*i].ray.o.x;
+                gravity[i].y=data[NUM_RAYS/NUM_LABELS*i].ray.o.y;
+                gravity[i].z=data[NUM_RAYS/NUM_LABELS*i].ray.o.z;
+        }
+        for(int i=0;i<iterVertex;i++){
+                memset(part,0,sizeof(part));
+                // 2,slave cores mark labels
+                __real_athread_spawn((void*)slave_func,0);
+                athread_join();
 
-	/** Cluster*/
-	while (host_nRays > 0) {
-		std::cout << "host_nRays = " << host_nRays << std::endl;
-		/** Vertex Cluster*/
-		for (int i = 0; i < MAX_VERTEX_CLUSTER_ROUND && !canSkip; i++) {
-			/** update item label*/
-			__real_athread_spawn((void*)slave_mark_vertex, 0);
-			athread_join();
-			/*int ptr;
-			for (int j = 0; j < NUM_RAYS; j++) {
-				Float minD = FLT_MAX, curD;
-				for (int lb = 0; lb < NUM_LABELS; lb++) {
-					curD = get_D(norm(gravity[lb]), norm(data[j].ray.o));
-					if (curD < minD) {
-						minD = curD;
-						ptr = lb;
-					}
-				}
-				data[j].label = ptr;
-			}*/
+                // 3,count part & update gravity
+                memset(gravity,0,sizeof(gravity));
+                for(int j=0;j<NUM_LABELS;j++){
+                        int n = 0;
+                        for(int k=0;k<NUM_SLAVE_CORE;k++){
+                                gravity[j].x+=part[k][j].sum.x;
+                                gravity[j].y+=part[k][j].sum.y;
+                                gravity[j].z+=part[k][j].sum.z;
+                                n+=part[k][j].n;
+                        }
+                        n=n==0?1:n;
+                        gravity[j].x/=n;
+                        gravity[j].y/=n;
+                        gravity[j].z/=n;
+                }
+        }
+        // 4,sort data by label
+        int cnt[NUM_LABELS],off[NUM_LABELS];
+        memset(cnt,0,sizeof(cnt));
+        off[0]=0;
+        for(int i=0;i<NUM_RAYS;i++){
+                if(data[i].label==0xffff) continue;
+                assert(data[i].label>=0&&data[i].label<NUM_LABELS);
+                cnt[data[i].label]++;
+        }
 
-			/** update gravity*/
-			SLAVE_CNT _gravity[NUM_LABELS];
-			memset(_gravity, 0, sizeof(_gravity));
-			for (int j = 0; j < NUM_RAYS; j++) {
-				if (memcmp(&invRayItem, &data[j], sizeof(RayItem)) == 0) continue;
-				//_gravity[data[j].label].sum.x += data[j].ray.o.x;		//	N
-				_gravity[data[j].label].sum.y += data[j].ray.o.y;		//	Y
-				//_gravity[data[j].label].sum.z += data[j].ray.o.z;		//	N
-				_gravity[data[j].label].n++;					//	Y
-			}
-			for (int j = 0; j < NUM_LABELS; j++) {
-				_gravity[j].n = max(1, _gravity[j].n);
-				gravity[j].x = _gravity[j].sum.x / _gravity[j].n;
-				gravity[j].y = _gravity[j].sum.y / _gravity[j].n;
-				gravity[j].z = _gravity[j].sum.z / _gravity[j].n;
-			}
-			//if(memcmp(curOrder,preOrder)==0) canSkip=true;
-		}
-		/** Align & Format data*/
-		memset(tmpdata, 0, sizeof(tmpdata));
-		int len1 = NUM_RAYS / NUM_LABELS + 1;
-		for (int i = 0; i < NUM_LABELS; i++) lptr[i] = i*len1;
-		for (int i = 0; i < NUM_RAYS; i++) {
-			if (memcmp(&invRayItem, &data[i], sizeof(RayItem)) == 0) continue;
-			int l = data[i].label;
-			assert(l < NUM_LABELS);
-			if (lptr[l] < min((l + 1)*len1, NUM_RAYS))
-				tmpdata[lptr[l]++] = data[i];
-			else {
-				int ptr;
-				for (int j = 0; j < NUM_LABELS; j++) {
-					assert(lptr[j] <= min((j + 1)*len1, NUM_RAYS));
-					if (lptr[j] == min((j + 1)*len1, NUM_RAYS)) continue;
-					else {
-						ptr = j;
-						break;
-					}
-				}
-				tmpdata[lptr[ptr]++] = data[i];
-			}
-		}
-		memcpy(data, tmpdata, sizeof(data));
-		canSkip = false;
-
-		/** Vector Cluster*/
-		for (int l = 0; l < NUM_LABELS; l++) {
-			for (int i = 0; i < MAX_VECTOR_CLUSTER_ROUND && !canSkip; i++) {
-				/** update item bunch*/
-				int ptr;
-				Float maxD = -FLT_MIN, curD;
-				for (int j = l*len1; j < min((l + 1)*len1, NUM_RAYS); j++) {
-					if (memcmp(&invRayItem, &data[j], sizeof(RayItem)) == 0) continue;
-					for (int lb = 0; lb < NUM_BUNCHES; lb++) {
-						curD = dot(norm(data[j].ray.d), norm(direction[lb]));
-						if (curD > maxD) {
-							maxD = curD;
-							ptr = lb;
-						}
-					}
-					data[j].bunch = ptr;
-				}
-
-				/** update direction*/
-				SLAVE_CNT _direction[NUM_BUNCHES];
-				memset(_direction, 0, sizeof(_direction));
-				for (int j = l*len1; j < min((l + 1)*len1, NUM_RAYS); j++) {
-					if (memcmp(&invRayItem, &data[j], sizeof(RayItem)) == 0) continue;
-					_direction[data[j].bunch].sum.x += data[j].ray.d.x;
-					_direction[data[j].bunch].sum.y += data[j].ray.d.y;
-					_direction[data[j].bunch].sum.z += data[j].ray.d.z;
-					_direction[data[j].bunch].n++;
-				}
-				for (int j = 0; j < NUM_BUNCHES; j++) {
-					_direction[j].n = max(1, _direction[j].n);
-					direction[j].x = _direction[j].sum.x / _direction[j].n;
-					direction[j].y = _direction[j].sum.y / _direction[j].n;
-					direction[j].z = _direction[j].sum.z / _direction[j].n;
-				}
-			}
-
-			/** Align and Format data*/
-			memset(tmpdata, 0, sizeof(tmpdata));
-			int len2 = len1 / NUM_BUNCHES + 1;
-			for (int i = 0; i < NUM_BUNCHES; i++) bptr[i] = i*len2;
-			for (int i = l*len1; i < min((l + 1)*len1, NUM_RAYS); i++) {
-				if (memcmp(&invRayItem, &data[i], sizeof(RayItem)) == 0) continue;
-				int b = data[i].bunch;
-				assert(b < NUM_BUNCHES);
-				if (bptr[b] < min((b + 1)*len2, len1))
-					tmpdata[bptr[b]++] = data[i];
-				else {
-					int ptr = 0;
-					for (int j = 0; j < NUM_BUNCHES; j++) {
-						assert(bptr[j] <= (j + 1)*len2);
-						if (bptr[j] == min((j + 1)*len2, len1)) continue;
-						else {
-							ptr = j;
-							break;
-						}
-					}
-					tmpdata[bptr[ptr]++] = data[i];
-				}
-				memcpy(&data[l*len1], tmpdata, (min(NUM_RAYS, (l + 1)*len1) - l*len1) * sizeof(RayItem));
-			}
-			canSkip = false;
-		}
-
-		/** Render*/
-		__real_athread_spawn((void*)slave_render, 0);
-		athread_join();
-
-		host_nRays--;
-	}
-	athread_halt();
+        for(int i=1;i<NUM_LABELS;i++) off[i]=off[i-1]+cnt[i-1];
+        for(int i=0;i<NUM_RAYS;i++) _data[off[data[i].label]++]=data[i];
+        memcpy(data,_data,sizeof(_data));
 }
 
 
-int main(int argc, char **argv) {
-	std::cout << "start" << std::endl;
-	init_data();
-	host_nRays = 10;
-	distribute();
-	std::cout << "done" << std::endl;
-	return 0;
+int main(){
+        athread_init();
+
+        init_data();
+        sortVertex(data,NUM_RAYS,1);
+        for(int i=0;i<NUM_RAYS;i++){
+                printf("%d:[%x,%x]\n",i+1,data[i].label,data[i].bunch);
+        }
+        athread_halt();
+        return 0;
 }
+
